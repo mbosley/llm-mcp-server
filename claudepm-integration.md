@@ -97,8 +97,9 @@ gpt_view = quick_gpt(prompt="Should we refactor this?")
 
 ## Cost Optimization
 
-- **Gemini 2.0 Flash**: ~$0.075 per 1M tokens (best for massive context)
-- **GPT-4o-mini**: ~$0.15 per 1M tokens (best for simple tasks)
-- **Claude 3 Haiku**: ~$0.25 per 1M tokens (best for balanced tasks)
+- **Gemini 2.5 Pro**: Best for massive context analysis
+- **Gemini 2.5 Flash**: Fast and capable for balanced tasks
+- **GPT-4.1-nano**: Ultra-fast and cheap for simple tasks
+- **GPT-4.1-mini**: Good alternative for balanced tasks
 
 Use the router to automatically optimize costs while maintaining quality!

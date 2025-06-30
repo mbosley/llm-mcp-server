@@ -30,11 +30,12 @@ server = Server("llm-tools")
 # Initialize LLM clients
 anthropic_client = None
 openai_client = None
-gemini_model = None
+gemini_pro_model = None
+gemini_flash_model = None
 
 def init_clients():
     """Initialize LLM clients with API keys"""
-    global anthropic_client, openai_client, gemini_model
+    global anthropic_client, openai_client, gemini_pro_model, gemini_flash_model
     
     if os.getenv("ANTHROPIC_API_KEY"):
         anthropic_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -44,7 +45,8 @@ def init_clients():
     
     if os.getenv("GOOGLE_API_KEY"):
         genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-        gemini_model = genai.GenerativeModel('gemini-2.0-flash')
+        gemini_pro_model = genai.GenerativeModel('gemini-2.5-pro')
+        gemini_flash_model = genai.GenerativeModel('gemini-2.5-flash')
 
 @server.list_tools()
 async def handle_list_tools() -> list[types.Tool]:
@@ -52,7 +54,7 @@ async def handle_list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="analyze_with_gemini",
-            description="Analyze large codebases or documents with Gemini's 1M token context",
+            description="Analyze large codebases or documents with Gemini 2.5 Pro's massive context window",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -75,7 +77,7 @@ async def handle_list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="quick_gpt",
-            description="Fast responses using GPT-4o-mini for simple tasks",
+            description="Fast responses using GPT-4.1-nano for simple tasks",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -93,14 +95,20 @@ async def handle_list_tools() -> list[types.Tool]:
             }
         ),
         types.Tool(
-            name="claude_haiku",
-            description="Use Claude 3 Haiku for fast, intelligent responses",
+            name="balanced_llm",
+            description="Use Gemini 2.5 Flash or GPT-4.1-mini for balanced tasks",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "prompt": {
                         "type": "string",
                         "description": "The task or question"
+                    },
+                    "model": {
+                        "type": "string",
+                        "enum": ["gemini-flash", "gpt-mini"],
+                        "description": "Choose model: gemini-flash or gpt-mini",
+                        "default": "gemini-flash"
                     },
                     "max_tokens": {
                         "type": "integer",
@@ -140,7 +148,7 @@ async def handle_call_tool(
     """Handle tool execution"""
     
     if name == "analyze_with_gemini":
-        if not gemini_model:
+        if not gemini_pro_model:
             return [types.TextContent(
                 type="text",
                 text="Error: Gemini API key not configured. Set GOOGLE_API_KEY in .env"
@@ -169,8 +177,8 @@ async def handle_call_tool(
         full_prompt = f"Context:\n{context}\n\nQuery: {prompt}" if context else prompt
         
         try:
-            # Gemini can handle up to 1M tokens
-            response = gemini_model.generate_content(full_prompt)
+            # Gemini 2.5 Pro has a massive context window
+            response = gemini_pro_model.generate_content(full_prompt)
             return [types.TextContent(type="text", text=response.text)]
         except Exception as e:
             return [types.TextContent(type="text", text=f"Gemini error: {str(e)}")]
@@ -187,7 +195,7 @@ async def handle_call_tool(
         
         try:
             response = openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4.1-nano",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=temperature,
                 max_tokens=500  # Keep responses quick
@@ -196,25 +204,40 @@ async def handle_call_tool(
         except Exception as e:
             return [types.TextContent(type="text", text=f"OpenAI error: {str(e)}")]
     
-    elif name == "claude_haiku":
-        if not anthropic_client:
-            return [types.TextContent(
-                type="text",
-                text="Error: Anthropic API key not configured. Set ANTHROPIC_API_KEY in .env"
-            )]
-        
+    elif name == "balanced_llm":
         prompt = arguments["prompt"]
+        model_choice = arguments.get("model", "gemini-flash")
         max_tokens = arguments.get("max_tokens", 1000)
         
-        try:
-            response = anthropic_client.messages.create(
-                model="claude-3-haiku-20240307",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens
-            )
-            return [types.TextContent(type="text", text=response.content[0].text)]
-        except Exception as e:
-            return [types.TextContent(type="text", text=f"Claude error: {str(e)}")]
+        if model_choice == "gemini-flash":
+            if not gemini_flash_model:
+                return [types.TextContent(
+                    type="text",
+                    text="Error: Gemini API key not configured. Set GOOGLE_API_KEY in .env"
+                )]
+            
+            try:
+                response = gemini_flash_model.generate_content(prompt)
+                return [types.TextContent(type="text", text=response.text)]
+            except Exception as e:
+                return [types.TextContent(type="text", text=f"Gemini Flash error: {str(e)}")]
+        
+        else:  # gpt-mini
+            if not openai_client:
+                return [types.TextContent(
+                    type="text",
+                    text="Error: OpenAI API key not configured. Set OPENAI_API_KEY in .env"
+                )]
+            
+            try:
+                response = openai_client.chat.completions.create(
+                    model="gpt-4.1-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=max_tokens
+                )
+                return [types.TextContent(type="text", text=response.choices[0].message.content)]
+            except Exception as e:
+                return [types.TextContent(type="text", text=f"GPT-4.1-mini error: {str(e)}")]
     
     elif name == "route_to_best_model":
         prompt = arguments["prompt"]
@@ -225,11 +248,11 @@ async def handle_call_tool(
             # Large context or analysis -> Gemini
             return await handle_call_tool("analyze_with_gemini", {"prompt": prompt})
         elif task_type == "simple" or len(prompt) < 200:
-            # Simple task -> GPT-4o-mini
+            # Simple task -> GPT-4.1-nano
             return await handle_call_tool("quick_gpt", {"prompt": prompt})
         else:
-            # Default to Claude Haiku for balanced tasks
-            return await handle_call_tool("claude_haiku", {"prompt": prompt})
+            # Default to Gemini Flash for balanced tasks
+            return await handle_call_tool("balanced_llm", {"prompt": prompt, "model": "gemini-flash"})
     
     else:
         return [types.TextContent(

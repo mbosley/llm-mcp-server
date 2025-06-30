@@ -4,9 +4,10 @@ An MCP (Model Context Protocol) server that provides access to various LLM APIs 
 
 ## Features
 
-- **Gemini 2.0 Flash** - Handle up to 1M tokens for massive context analysis
-- **GPT-4o-mini** - Fast, cheap completions for simple tasks
-- **Claude 3 Haiku** - Anthropic's fast model for quick operations
+- **Gemini 2.5 Pro** - Handle massive context windows for comprehensive analysis
+- **Gemini 2.5 Flash** - Fast, capable model for balanced tasks
+- **GPT-4.1-nano** - Ultra-fast, lightweight completions for simple tasks
+- **GPT-4.1-mini** - Alternative balanced model with good performance
 - **Custom model routing** - Choose the right model for each task
 
 ## Installation
@@ -38,7 +39,7 @@ GOOGLE_API_KEY=your_key_here
 ## Available Tools
 
 ### analyze_with_gemini
-Analyze large codebases or documents with Gemini's 1M token context window.
+Analyze large codebases or documents with Gemini 2.5 Pro's massive context window.
 ```
 Parameters:
 - prompt: The analysis query
@@ -47,18 +48,19 @@ Parameters:
 ```
 
 ### quick_gpt
-Fast responses using GPT-4o-mini for simple tasks.
+Fast responses using GPT-4.1-nano for simple tasks.
 ```
 Parameters:
 - prompt: The task or question
 - temperature: Control randomness (0-1, default 0.3)
 ```
 
-### claude_haiku
-Use Claude 3 Haiku for fast, intelligent responses.
+### balanced_llm
+Use Gemini 2.5 Flash or GPT-4.1-mini for balanced tasks.
 ```
 Parameters:
 - prompt: The task or question
+- model: "gemini-flash" or "gpt-mini" (default: "gemini-flash")
 - max_tokens: Maximum response length (default 1000)
 ```
 
