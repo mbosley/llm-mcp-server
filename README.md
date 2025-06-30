@@ -72,6 +72,13 @@ Parameters:
 - task_type: "analysis", "generation", "simple", or "auto"
 ```
 
+### check_costs
+Check cumulative costs for all LLM usage in this session.
+```
+Parameters: none
+Returns: Detailed cost breakdown by model
+```
+
 ## Usage Examples
 
 In Claude Code, these tools become available for use:
@@ -94,6 +101,24 @@ response = route_to_best_model(
     task_type="analysis"
 )
 ```
+
+## Cost Tracking
+
+Every request automatically tracks:
+- Token usage (estimated)
+- Cost per request
+- Cumulative costs per model
+- Total costs across all models
+
+Each response includes cost info:
+```
+[Response content]
+
+---
+💰 Cost: $0.000125 | Total: $0.0045
+```
+
+Use `check_costs()` tool anytime to see detailed breakdown.
 
 ## Slash Commands
 

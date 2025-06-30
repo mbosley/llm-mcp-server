@@ -9,6 +9,8 @@ import asyncio
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 import glob
+from datetime import datetime
+from collections import defaultdict
 
 from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
@@ -27,11 +29,81 @@ load_dotenv()
 # Initialize server
 server = Server("llm-tools")
 
+# Cost tracking (prices per 1M tokens)
+COST_PER_1M_TOKENS = {
+    "gemini-2.5-pro": {"input": 1.25, "output": 10.00},   # For <200k tokens
+    "gemini-2.5-flash": {"input": 0.15, "output": 0.60},  # Actual pricing
+    "gpt-4.1-nano": {"input": 0.10, "output": 0.40},      # Actual pricing  
+    "gpt-4.1-mini": {"input": 0.40, "output": 1.60},      # Actual pricing
+}
+
+# Track costs in memory (reset on server restart)
+cost_tracker = defaultdict(lambda: {"requests": 0, "total_cost": 0.0, "tokens": {"input": 0, "output": 0}})
+
+# Cost log file (optional)
+COST_LOG_FILE = os.getenv("LLM_COST_LOG", None)
+
 # Initialize LLM clients
 anthropic_client = None
 openai_client = None
 gemini_pro_model = None
 gemini_flash_model = None
+
+def estimate_tokens(text: str) -> int:
+    """Rough estimate of token count (1 token ≈ 4 characters)"""
+    return len(text) // 4
+
+def calculate_cost(model: str, input_text: str, output_text: str) -> float:
+    """Calculate cost for a request"""
+    if model not in COST_PER_1M_TOKENS:
+        return 0.0
+    
+    input_tokens = estimate_tokens(input_text)
+    output_tokens = estimate_tokens(output_text)
+    
+    input_cost = (input_tokens / 1_000_000) * COST_PER_1M_TOKENS[model]["input"]
+    output_cost = (output_tokens / 1_000_000) * COST_PER_1M_TOKENS[model]["output"]
+    
+    return input_cost + output_cost
+
+def track_cost(model: str, input_text: str, output_text: str) -> Dict[str, Any]:
+    """Track cost and return cost info"""
+    cost = calculate_cost(model, input_text, output_text)
+    input_tokens = estimate_tokens(input_text)
+    output_tokens = estimate_tokens(output_text)
+    
+    # Update tracker
+    cost_tracker[model]["requests"] += 1
+    cost_tracker[model]["total_cost"] += cost
+    cost_tracker[model]["tokens"]["input"] += input_tokens
+    cost_tracker[model]["tokens"]["output"] += output_tokens
+    
+    cost_info = {
+        "model": model,
+        "cost": round(cost, 6),
+        "tokens": {"input": input_tokens, "output": output_tokens},
+        "cumulative": {
+            "total_cost": round(cost_tracker[model]["total_cost"], 4),
+            "requests": cost_tracker[model]["requests"]
+        }
+    }
+    
+    # Log to file if configured
+    if COST_LOG_FILE:
+        try:
+            with open(COST_LOG_FILE, 'a') as f:
+                log_entry = {
+                    "timestamp": datetime.now().isoformat(),
+                    "model": model,
+                    "cost": cost_info["cost"],
+                    "tokens": cost_info["tokens"],
+                    "cumulative_cost": cost_info["cumulative"]["total_cost"]
+                }
+                f.write(json.dumps(log_entry) + "\n")
+        except Exception as e:
+            pass  # Silent fail on logging
+    
+    return cost_info
 
 def init_clients():
     """Initialize LLM clients with API keys"""
@@ -138,6 +210,14 @@ async def handle_list_tools() -> list[types.Tool]:
                 },
                 "required": ["prompt"]
             }
+        ),
+        types.Tool(
+            name="check_costs",
+            description="Check cumulative costs for all LLM usage",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
         )
     ]
 
@@ -179,7 +259,14 @@ async def handle_call_tool(
         try:
             # Gemini 2.5 Pro has a massive context window
             response = gemini_pro_model.generate_content(full_prompt)
-            return [types.TextContent(type="text", text=response.text)]
+            
+            # Track cost
+            cost_info = track_cost("gemini-2.5-pro", full_prompt, response.text)
+            
+            return [types.TextContent(
+                type="text", 
+                text=f"{response.text}\n\n---\n💰 Cost: ${cost_info['cost']:.6f} | Total: ${cost_info['cumulative']['total_cost']:.4f}"
+            )]
         except Exception as e:
             return [types.TextContent(type="text", text=f"Gemini error: {str(e)}")]
     
@@ -200,7 +287,15 @@ async def handle_call_tool(
                 temperature=temperature,
                 max_tokens=500  # Keep responses quick
             )
-            return [types.TextContent(type="text", text=response.choices[0].message.content)]
+            
+            # Track cost
+            output_text = response.choices[0].message.content
+            cost_info = track_cost("gpt-4.1-nano", prompt, output_text)
+            
+            return [types.TextContent(
+                type="text",
+                text=f"{output_text}\n\n---\n💰 Cost: ${cost_info['cost']:.6f} | Total: ${cost_info['cumulative']['total_cost']:.4f}"
+            )]
         except Exception as e:
             return [types.TextContent(type="text", text=f"OpenAI error: {str(e)}")]
     
@@ -218,7 +313,14 @@ async def handle_call_tool(
             
             try:
                 response = gemini_flash_model.generate_content(prompt)
-                return [types.TextContent(type="text", text=response.text)]
+                
+                # Track cost
+                cost_info = track_cost("gemini-2.5-flash", prompt, response.text)
+                
+                return [types.TextContent(
+                    type="text",
+                    text=f"{response.text}\n\n---\n💰 Cost: ${cost_info['cost']:.6f} | Total: ${cost_info['cumulative']['total_cost']:.4f}"
+                )]
             except Exception as e:
                 return [types.TextContent(type="text", text=f"Gemini Flash error: {str(e)}")]
         
@@ -235,7 +337,15 @@ async def handle_call_tool(
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=max_tokens
                 )
-                return [types.TextContent(type="text", text=response.choices[0].message.content)]
+                
+                # Track cost
+                output_text = response.choices[0].message.content
+                cost_info = track_cost("gpt-4.1-mini", prompt, output_text)
+                
+                return [types.TextContent(
+                    type="text",
+                    text=f"{output_text}\n\n---\n💰 Cost: ${cost_info['cost']:.6f} | Total: ${cost_info['cumulative']['total_cost']:.4f}"
+                )]
             except Exception as e:
                 return [types.TextContent(type="text", text=f"GPT-4.1-mini error: {str(e)}")]
     
@@ -253,6 +363,34 @@ async def handle_call_tool(
         else:
             # Default to Gemini Flash for balanced tasks
             return await handle_call_tool("balanced_llm", {"prompt": prompt, "model": "gemini-flash"})
+    
+    elif name == "check_costs":
+        # Generate cost report
+        report = "## LLM Usage Cost Report\n\n"
+        
+        total_cost = 0
+        total_requests = 0
+        
+        for model, data in sorted(cost_tracker.items()):
+            if data["requests"] > 0:
+                report += f"### {model}\n"
+                report += f"- Requests: {data['requests']}\n"
+                report += f"- Total Cost: ${data['total_cost']:.4f}\n"
+                report += f"- Input Tokens: {data['tokens']['input']:,}\n"
+                report += f"- Output Tokens: {data['tokens']['output']:,}\n"
+                report += f"- Avg Cost/Request: ${data['total_cost']/data['requests']:.6f}\n\n"
+                
+                total_cost += data["total_cost"]
+                total_requests += data["requests"]
+        
+        if total_requests == 0:
+            report = "No LLM usage tracked yet."
+        else:
+            report += f"### Total\n"
+            report += f"- All Requests: {total_requests}\n"
+            report += f"- **Total Cost: ${total_cost:.4f}**\n"
+        
+        return [types.TextContent(type="text", text=report)]
     
     else:
         return [types.TextContent(
