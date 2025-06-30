@@ -10,31 +10,70 @@ An MCP (Model Context Protocol) server that provides access to various LLM APIs 
 - **GPT-4.1-mini** - Alternative balanced model with good performance
 - **Custom model routing** - Choose the right model for each task
 
-## Installation
+## Complete Installation Guide
 
-1. Install dependencies:
+### Step 1: Clone or Download
 ```bash
-pip install mcp anthropic google-generativeai openai python-dotenv
+cd ~/projects  # or your preferred directory
+git clone [repository-url] llm-mcp-server
+cd llm-mcp-server
 ```
 
-2. Create `.env` file with your API keys:
-```
-ANTHROPIC_API_KEY=your_key_here
-OPENAI_API_KEY=your_key_here
-GOOGLE_API_KEY=your_key_here
+### Step 2: Run Setup Script
+```bash
+chmod +x setup.sh
+./setup.sh
 ```
 
-3. Configure Claude Code to use this MCP server by adding to your Claude Code settings:
-```json
-{
-  "mcpServers": {
-    "llm-tools": {
-      "command": "python",
-      "args": ["/path/to/llm-mcp-server/server.py"]
-    }
-  }
-}
+This will:
+- Create a Python virtual environment
+- Install all dependencies
+- Create a `.env` file from template
+
+### Step 3: Add Your API Keys
+Edit the `.env` file:
+```bash
+nano .env  # or use your preferred editor
 ```
+
+Add at least one API key (you don't need all):
+```
+# For Gemini models (2.5 Pro and Flash)
+GOOGLE_API_KEY=your_google_api_key_here
+
+# For GPT models (4.1-nano and mini)
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Optional: Log costs to file
+# LLM_COST_LOG=/path/to/llm_costs.jsonl
+```
+
+### Step 4: Configure Claude Code
+In Claude Code, add the MCP server using this command:
+```bash
+claude mcp add --scope user llm-tools python /full/path/to/llm-mcp-server/server.py
+```
+
+For example:
+```bash
+claude mcp add --scope user llm-tools python /Users/yourname/projects/llm-mcp-server/server.py
+```
+
+### Step 5: Verify Installation
+Check that it's configured:
+```bash
+/mcp
+```
+You should see "llm-tools" listed.
+
+### Step 6: Restart Claude Code
+- Completely quit Claude Code (Cmd+Q on Mac, Alt+F4 on Windows)
+- Reopen Claude Code
+
+### Step 7: Test the Tools
+In any Claude conversation, the tools are now available. Test by asking:
+- "Use analyze_with_gemini to check if the tools are working"
+- "Use check_costs to see the cost tracking"
 
 ## Available Tools
 
@@ -119,6 +158,25 @@ Each response includes cost info:
 ```
 
 Use `check_costs()` tool anytime to see detailed breakdown.
+
+## Troubleshooting
+
+### Tools not appearing?
+1. Make sure you used the full absolute path in the `claude mcp add` command
+2. Check `/mcp` shows the server as "Running"
+3. Ensure you restarted Claude Code completely
+4. Verify at least one API key is set in `.env`
+
+### Getting API errors?
+- Check your API keys are valid
+- Ensure you have credits/quota on your accounts
+- Google API key needs Gemini API enabled
+- OpenAI key needs GPT-4.1 access
+
+### Python errors?
+- Make sure Python 3.8+ is installed
+- Try using the virtual environment: `source venv/bin/activate`
+- Check all dependencies installed: `pip list`
 
 ## Slash Commands
 
