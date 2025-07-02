@@ -28,7 +28,8 @@ chmod +x setup.sh
 This will:
 - Create a Python virtual environment
 - Install all dependencies
-- Create a `.env` file from template
+- Create a `.env` file from `.env.example` template
+- Make the server executable
 
 ### Step 3: Add Your API Keys
 Edit the `.env` file:
@@ -38,13 +39,16 @@ nano .env  # or use your preferred editor
 
 Add at least one API key (you don't need all):
 ```
-# For Gemini models (2.5 Pro and Flash)
-GOOGLE_API_KEY=your_google_api_key_here
+# Anthropic API for Claude models
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
 
-# For GPT models (4.1-nano and mini)
+# OpenAI API for GPT models  
 OPENAI_API_KEY=your_openai_api_key_here
 
-# Optional: Log costs to file
+# Google API for Gemini models
+GOOGLE_API_KEY=your_google_api_key_here
+
+# Optional: Log costs to file (JSON lines format)
 # LLM_COST_LOG=/path/to/llm_costs.jsonl
 ```
 
@@ -170,13 +174,19 @@ Use `check_costs()` tool anytime to see detailed breakdown.
 ### Getting API errors?
 - Check your API keys are valid
 - Ensure you have credits/quota on your accounts
-- Google API key needs Gemini API enabled
-- OpenAI key needs GPT-4.1 access
+- Google API key needs Gemini API enabled in Google Cloud Console
+- OpenAI key needs appropriate model access
+- Anthropic key needs to be from the Anthropic Console
 
 ### Python errors?
 - Make sure Python 3.8+ is installed
 - Try using the virtual environment: `source venv/bin/activate`
 - Check all dependencies installed: `pip list`
+
+### Server not starting?
+- Check that server.py has execute permissions: `chmod +x server.py`
+- Verify the path in your MCP configuration is correct
+- Check Claude Code logs for error messages
 
 ## Slash Commands
 
