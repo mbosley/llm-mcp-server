@@ -4,6 +4,7 @@ An MCP (Model Context Protocol) server that provides access to various LLM APIs 
 
 ## Features
 
+- **Kimi K2** - State-of-the-art 1T parameter MoE model with 128k context window
 - **Gemini 2.5 Pro** - Handle massive context windows for comprehensive analysis
 - **Gemini 2.5 Flash** - Fast, capable model for balanced tasks
 - **GPT-4.1-nano** - Ultra-fast, lightweight completions for simple tasks
@@ -47,6 +48,9 @@ OPENAI_API_KEY=your_openai_api_key_here
 
 # Google API for Gemini models
 GOOGLE_API_KEY=your_google_api_key_here
+
+# Moonshot API for Kimi K2 models
+MOONSHOT_API_KEY=your_moonshot_api_key_here
 
 # Optional: Log costs to file (JSON lines format)
 # LLM_COST_LOG=/path/to/llm_costs.jsonl
@@ -113,6 +117,25 @@ Automatically choose the best model based on the task.
 Parameters:
 - prompt: The task description
 - task_type: "analysis", "generation", "simple", or "auto"
+```
+
+### kimi_k2_base
+Use Kimi K2 Base model (1T params) for raw completions and experimentation.
+```
+Parameters:
+- prompt: The input prompt
+- temperature: Control randomness (0-1, default 0.6)
+- max_tokens: Maximum response length (default 4096)
+```
+
+### kimi_k2_instruct
+Use Kimi K2 Instruct model for chat, tool use, and agentic tasks with 128k context.
+```
+Parameters:
+- prompt: The user message or task
+- system: System message for behavior guidance (optional)
+- temperature: Control randomness (0-1, default 0.6)
+- max_tokens: Maximum response length (default 4096)
 ```
 
 ### check_costs

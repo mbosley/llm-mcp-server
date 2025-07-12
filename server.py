@@ -35,6 +35,8 @@ COST_PER_1M_TOKENS = {
     "gemini-2.5-flash": {"input": 0.15, "output": 0.60},  # Actual pricing
     "gpt-4.1-nano": {"input": 0.10, "output": 0.40},      # Actual pricing  
     "gpt-4.1-mini": {"input": 0.40, "output": 1.60},      # Actual pricing
+    "kimi-k2-base": {"input": 0.20, "output": 0.80},      # ~5x cheaper than Claude/Gemini
+    "kimi-k2-instruct": {"input": 0.25, "output": 1.00},  # Estimated pricing
 }
 
 # Track costs in memory (reset on server restart)
@@ -46,6 +48,7 @@ COST_LOG_FILE = os.getenv("LLM_COST_LOG", None)
 # Initialize LLM clients
 anthropic_client = None
 openai_client = None
+moonshot_client = None
 gemini_pro_model = None
 gemini_flash_model = None
 
@@ -107,13 +110,20 @@ def track_cost(model: str, input_text: str, output_text: str) -> Dict[str, Any]:
 
 def init_clients():
     """Initialize LLM clients with API keys"""
-    global anthropic_client, openai_client, gemini_pro_model, gemini_flash_model
+    global anthropic_client, openai_client, moonshot_client, gemini_pro_model, gemini_flash_model
     
     if os.getenv("ANTHROPIC_API_KEY"):
         anthropic_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     
     if os.getenv("OPENAI_API_KEY"):
         openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    
+    if os.getenv("MOONSHOT_API_KEY"):
+        # Kimi K2 uses OpenAI-compatible API
+        moonshot_client = OpenAI(
+            api_key=os.getenv("MOONSHOT_API_KEY"),
+            base_url="https://platform.moonshot.ai/v1"
+        )
     
     if os.getenv("GOOGLE_API_KEY"):
         genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
@@ -206,6 +216,59 @@ async def handle_list_tools() -> list[types.Tool]:
                         "enum": ["analysis", "generation", "simple", "auto"],
                         "description": "Type of task to help routing",
                         "default": "auto"
+                    }
+                },
+                "required": ["prompt"]
+            }
+        ),
+        types.Tool(
+            name="kimi_k2_base",
+            description="Use Kimi K2 Base model (1T params) for raw completions and experimentation",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "The input prompt"
+                    },
+                    "temperature": {
+                        "type": "number",
+                        "description": "Control randomness (0-1). Kimi K2 maps as: real_temp = request_temp * 0.6",
+                        "default": 0.6
+                    },
+                    "max_tokens": {
+                        "type": "integer",
+                        "description": "Maximum response length",
+                        "default": 4096
+                    }
+                },
+                "required": ["prompt"]
+            }
+        ),
+        types.Tool(
+            name="kimi_k2_instruct",
+            description="Use Kimi K2 Instruct model for chat, tool use, and agentic tasks (128k context)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "The user message or task"
+                    },
+                    "system": {
+                        "type": "string",
+                        "description": "System message for behavior guidance",
+                        "default": "You are Kimi, an AI assistant created by Moonshot AI."
+                    },
+                    "temperature": {
+                        "type": "number",
+                        "description": "Control randomness (0-1). Recommended: 0.6",
+                        "default": 0.6
+                    },
+                    "max_tokens": {
+                        "type": "integer",
+                        "description": "Maximum response length",
+                        "default": 4096
                     }
                 },
                 "required": ["prompt"]
@@ -363,6 +426,72 @@ async def handle_call_tool(
         else:
             # Default to Gemini Flash for balanced tasks
             return await handle_call_tool("balanced_llm", {"prompt": prompt, "model": "gemini-flash"})
+    
+    elif name == "kimi_k2_base":
+        if not moonshot_client:
+            return [types.TextContent(
+                type="text",
+                text="Error: Moonshot API key not configured. Set MOONSHOT_API_KEY in .env"
+            )]
+        
+        prompt = arguments["prompt"]
+        temperature = arguments.get("temperature", 0.6)
+        max_tokens = arguments.get("max_tokens", 4096)
+        
+        try:
+            # Use the base model for raw completions
+            response = moonshot_client.completions.create(
+                model="kimi-k2",
+                prompt=prompt,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            
+            # Track cost
+            output_text = response.choices[0].text
+            cost_info = track_cost("kimi-k2-base", prompt, output_text)
+            
+            return [types.TextContent(
+                type="text",
+                text=f"{output_text}\n\n---\n💰 Cost: ${cost_info['cost']:.6f} | Total: ${cost_info['cumulative']['total_cost']:.4f}"
+            )]
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"Kimi K2 Base error: {str(e)}")]
+    
+    elif name == "kimi_k2_instruct":
+        if not moonshot_client:
+            return [types.TextContent(
+                type="text",
+                text="Error: Moonshot API key not configured. Set MOONSHOT_API_KEY in .env"
+            )]
+        
+        prompt = arguments["prompt"]
+        system = arguments.get("system", "You are Kimi, an AI assistant created by Moonshot AI.")
+        temperature = arguments.get("temperature", 0.6)
+        max_tokens = arguments.get("max_tokens", 4096)
+        
+        try:
+            # Use chat completions for the instruct model
+            response = moonshot_client.chat.completions.create(
+                model="kimi-k2-instruct",
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            
+            # Track cost
+            output_text = response.choices[0].message.content
+            cost_info = track_cost("kimi-k2-instruct", prompt, output_text)
+            
+            return [types.TextContent(
+                type="text",
+                text=f"{output_text}\n\n---\n💰 Cost: ${cost_info['cost']:.6f} | Total: ${cost_info['cumulative']['total_cost']:.4f}"
+            )]
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"Kimi K2 Instruct error: {str(e)}")]
     
     elif name == "check_costs":
         # Generate cost report
