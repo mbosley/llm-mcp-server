@@ -6,6 +6,7 @@ LLM MCP Server - Provides access to various LLM APIs as tools
 import os
 import json
 import asyncio
+import subprocess
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 import glob
@@ -26,6 +27,162 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Safety features for CLI tool execution
+DANGEROUS_COMMANDS = {
+    # File system destruction
+    "rm", "rmdir", "del", "format", "fdisk", "dd", "mkfs", "shred",
+    # System control
+    "shutdown", "reboot", "poweroff", "halt", "init",
+    # User/permission management  
+    "passwd", "useradd", "userdel", "groupadd", "usermod", "groupmod",
+    "chmod", "chown", "chgrp", "umask",
+    # Process control
+    "kill", "pkill", "killall", "nice", "renice",
+    # System configuration
+    "systemctl", "service", "update-rc.d", "chkconfig",
+    "iptables", "firewall-cmd", "ufw",
+    # Package management
+    "apt", "apt-get", "yum", "dnf", "pacman", "brew", "npm", "pip",
+    # Dangerous utilities
+    "eval", "exec", "source", "sudo", "su", "doas",
+}
+
+DANGEROUS_PATTERNS = [
+    # Shell redirections and pipes that could be destructive
+    ">", ">>", ">&", "&>", "2>", "2>>",
+    # Command substitution
+    "$(", "${", "`",
+    # Path traversal and sensitive files
+    "..", "~/.ssh", "~/.aws", "/etc/passwd", "/etc/shadow", ".env",
+    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+    # Sudo variations
+    "sudo ", "sudo\t", "doas ", "su ",
+    # Background execution
+    "&", "nohup",
+    # Multiple command execution
+    "&&", "||", ";", "\n",
+]
+
+def is_command_safe(command: str) -> tuple[bool, str]:
+    """Check if a command is safe to execute"""
+    command_lower = command.lower()
+    
+    # Check for dangerous base commands
+    first_word = command_lower.split()[0] if command_lower.split() else ""
+    if first_word in DANGEROUS_COMMANDS:
+        return False, f"Command '{first_word}' is not allowed for safety reasons"
+    
+    # Check for dangerous patterns
+    for pattern in DANGEROUS_PATTERNS:
+        if pattern in command:
+            return False, f"Pattern '{pattern}' is not allowed in commands"
+    
+    # Check for attempts to escape or chain commands
+    if any(op in command for op in ["&&", "||", ";", "|", "\n"]):
+        return False, "Command chaining is not allowed"
+    
+    return True, "Command appears safe"
+
+# CLI Tool execution framework for Kimi K2
+def execute_cli_tool(tool_name: str, command: str, arguments: Dict[str, Any]) -> str:
+    """Execute a CLI tool with given arguments and safety checks"""
+    try:
+        # Build command with arguments
+        if arguments:
+            # Convert arguments to command line args
+            args = []
+            for key, value in arguments.items():
+                # Basic argument sanitization
+                str_value = str(value)
+                if any(char in str_value for char in ["'", '"', "$", "`", "\\"]):
+                    return f"Error: Invalid characters in arguments"
+                args.append(str_value)
+            full_command = f"{command} {' '.join(args)}"
+        else:
+            full_command = command
+        
+        # Safety check
+        is_safe, safety_msg = is_command_safe(full_command)
+        if not is_safe:
+            return f"Safety Error: {safety_msg}"
+        
+        # Log command execution (basic audit trail)
+        if os.getenv("LOG_COMMANDS", "").lower() == "true":
+            with open("command_audit.log", "a") as f:
+                f.write(f"{datetime.now().isoformat()} - Tool: {tool_name} - Command: {full_command}\n")
+        
+        # Execute command with restrictions
+        result = subprocess.run(
+            full_command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=30,  # 30 second timeout
+            env={**os.environ, "PATH": "/usr/bin:/bin:/usr/local/bin"}  # Restricted PATH
+        )
+        
+        if result.returncode == 0:
+            return result.stdout.strip() if result.stdout else "(No output)"
+        else:
+            return f"Error: {result.stderr.strip() if result.stderr else f'Exit code {result.returncode}'}"
+            
+    except subprocess.TimeoutExpired:
+        return f"Error: Tool '{tool_name}' timed out after 30 seconds"
+    except Exception as e:
+        return f"Error executing {tool_name}: {str(e)}"
+
+# Built-in tool definitions (examples)
+BUILTIN_TOOLS = {
+    "get_current_time": {
+        "command": "date '+%Y-%m-%d %H:%M:%S'",
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "get_current_time",
+                "description": "Get the current date and time",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        }
+    },
+    "add_numbers": {
+        "command": "python3 -c 'import sys; print(float(sys.argv[1]) + float(sys.argv[2]))'",
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "add_numbers",
+                "description": "Add two numbers together",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "a": {"type": "number", "description": "First number"},
+                        "b": {"type": "number", "description": "Second number"}
+                    },
+                    "required": ["a", "b"]
+                }
+            }
+        }
+    },
+    "list_files": {
+        "command": "ls -la",
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "list_files",
+                "description": "List files in current directory",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        }
+    }
+}
+
 # Initialize server
 server = Server("llm-tools")
 
@@ -35,8 +192,9 @@ COST_PER_1M_TOKENS = {
     "gemini-2.5-flash": {"input": 0.15, "output": 0.60},  # Actual pricing
     "gpt-4.1-nano": {"input": 0.10, "output": 0.40},      # Actual pricing  
     "gpt-4.1-mini": {"input": 0.40, "output": 1.60},      # Actual pricing
-    "kimi-k2-base": {"input": 0.20, "output": 0.80},      # ~5x cheaper than Claude/Gemini
-    "kimi-k2-instruct": {"input": 0.25, "output": 1.00},  # Estimated pricing
+    "kimi-k2-0711-preview": {"input": 0.60, "output": 2.50},  # Official Kimi K2 pricing
+    "moonshot-v1-auto": {"input": 0.15, "output": 2.50},  # Auto-routing model
+    "moonshot-v1-128k": {"input": 0.60, "output": 2.50},  # 128k context model
 }
 
 # Track costs in memory (reset on server restart)
@@ -122,7 +280,7 @@ def init_clients():
         # Kimi K2 uses OpenAI-compatible API
         moonshot_client = OpenAI(
             api_key=os.getenv("MOONSHOT_API_KEY"),
-            base_url="https://platform.moonshot.ai/v1"
+            base_url="https://api.moonshot.ai/v1"
         )
     
     if os.getenv("GOOGLE_API_KEY"):
@@ -222,56 +380,72 @@ async def handle_list_tools() -> list[types.Tool]:
             }
         ),
         types.Tool(
-            name="kimi_k2_base",
-            description="Use Kimi K2 Base model (1T params) for raw completions and experimentation",
+            name="kimi_chat",
+            description="Flexible Kimi chat - supports simple prompts, multi-turn conversations, and partial pre-filling",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "prompt": {
                         "type": "string",
-                        "description": "The input prompt"
+                        "description": "Simple prompt (for single-turn) or latest user message"
                     },
-                    "temperature": {
-                        "type": "number",
-                        "description": "Control randomness (0-1). Kimi K2 maps as: real_temp = request_temp * 0.6",
-                        "default": 0.6
-                    },
-                    "max_tokens": {
-                        "type": "integer",
-                        "description": "Maximum response length",
-                        "default": 4096
-                    }
-                },
-                "required": ["prompt"]
-            }
-        ),
-        types.Tool(
-            name="kimi_k2_instruct",
-            description="Use Kimi K2 Instruct model for chat, tool use, and agentic tasks (128k context)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "The user message or task"
+                    "messages": {
+                        "type": "array",
+                        "description": "Full conversation history (overrides prompt if provided)",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "role": {"type": "string", "enum": ["system", "user", "assistant"]},
+                                "content": {"type": "string"},
+                                "name": {"type": "string"},
+                                "partial": {"type": "boolean"}
+                            },
+                            "required": ["role", "content"]
+                        }
                     },
                     "system": {
                         "type": "string",
-                        "description": "System message for behavior guidance",
-                        "default": "You are Kimi, an AI assistant created by Moonshot AI."
+                        "description": "System message (used only if messages not provided)"
+                    },
+                    "partial_response": {
+                        "type": "string",
+                        "description": "Pre-fill the assistant's response to maintain character/format"
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Model name: 'kimi-k2-0711-preview' (instruct/chat), 'kimi-k2-base' (base/completions), or other Moonshot models",
+                        "default": "kimi-k2-0711-preview"
                     },
                     "temperature": {
                         "type": "number",
-                        "description": "Control randomness (0-1). Recommended: 0.6",
+                        "description": "Control randomness (0-1)",
                         "default": 0.6
                     },
                     "max_tokens": {
                         "type": "integer",
                         "description": "Maximum response length",
                         "default": 4096
+                    },
+                    "available_tools": {
+                        "type": "array",
+                        "description": "List of tool names that Kimi can execute",
+                        "items": {"type": "string"}
+                    },
+                    "dynamic_tools": {
+                        "type": "array",
+                        "description": "Dynamic tool definitions created on-the-fly",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "command": {"type": "string"},
+                                "schema": {"type": "object"}
+                            },
+                            "required": ["name", "command", "schema"]
+                        }
                     }
                 },
-                "required": ["prompt"]
+                "required": []
             }
         ),
         types.Tool(
@@ -427,71 +601,175 @@ async def handle_call_tool(
             # Default to Gemini Flash for balanced tasks
             return await handle_call_tool("balanced_llm", {"prompt": prompt, "model": "gemini-flash"})
     
-    elif name == "kimi_k2_base":
+    elif name == "kimi_chat":
         if not moonshot_client:
             return [types.TextContent(
                 type="text",
                 text="Error: Moonshot API key not configured. Set MOONSHOT_API_KEY in .env"
             )]
         
-        prompt = arguments["prompt"]
+        # Extract parameters
+        messages = arguments.get("messages", None)
+        prompt = arguments.get("prompt", "")
+        system = arguments.get("system", None)
+        partial_response = arguments.get("partial_response", None)
+        model = arguments.get("model", "kimi-k2-0711-preview")
         temperature = arguments.get("temperature", 0.6)
         max_tokens = arguments.get("max_tokens", 4096)
+        available_tools = arguments.get("available_tools", None)
+        dynamic_tools = arguments.get("dynamic_tools", None)
+        
+        # Build messages array
+        if messages:
+            # Use provided message history
+            final_messages = messages.copy()
+        else:
+            # Build from simple inputs
+            final_messages = []
+            if system:
+                final_messages.append({"role": "system", "content": system})
+            if prompt:
+                final_messages.append({"role": "user", "content": prompt})
+        
+        # Add partial pre-filling if requested
+        if partial_response:
+            final_messages.append({
+                "role": "assistant",
+                "content": partial_response,
+                "partial": True
+            })
+        
+        # Validate we have messages
+        if not final_messages:
+            return [types.TextContent(
+                type="text",
+                text="Error: Must provide either 'prompt' or 'messages'"
+            )]
+        
+        # Prepare tools if available
+        tools = None
+        all_tools = {}  # Combined tool registry for this request
+        
+        # Add built-in tools if requested
+        if available_tools:
+            for tool_name in available_tools:
+                if tool_name in BUILTIN_TOOLS:
+                    all_tools[tool_name] = BUILTIN_TOOLS[tool_name]
+                else:
+                    return [types.TextContent(
+                        type="text",
+                        text=f"Error: Unknown tool '{tool_name}'. Available tools: {list(BUILTIN_TOOLS.keys())}"
+                    )]
+        
+        # Add dynamic tools if provided
+        if dynamic_tools:
+            for tool_def in dynamic_tools:
+                tool_name = tool_def["name"]
+                all_tools[tool_name] = {
+                    "command": tool_def["command"],
+                    "schema": tool_def["schema"]
+                }
+        
+        # Build tools array for API call
+        if all_tools:
+            tools = [tool_info["schema"] for tool_info in all_tools.values()]
         
         try:
-            # Use the base model for raw completions
-            response = moonshot_client.completions.create(
-                model="kimi-k2",
-                prompt=prompt,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
+            # Make initial API call
+            api_params = {
+                "model": model,
+                "messages": final_messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens
+            }
+            if tools:
+                api_params["tools"] = tools
             
-            # Track cost
-            output_text = response.choices[0].text
-            cost_info = track_cost("kimi-k2-base", prompt, output_text)
+            response = moonshot_client.chat.completions.create(**api_params)
+            message = response.choices[0].message
+            
+            # Check if Kimi wants to call tools
+            if hasattr(message, 'tool_calls') and message.tool_calls:
+                # Handle tool calls
+                tool_results = []
+                
+                # Add assistant's message with tool calls to conversation
+                final_messages.append({
+                    "role": "assistant",
+                    "content": message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": tc.type,
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments
+                            }
+                        } for tc in message.tool_calls
+                    ]
+                })
+                
+                # Execute each tool call
+                for tool_call in message.tool_calls:
+                    tool_name = tool_call.function.name
+                    tool_args_str = tool_call.function.arguments
+                    
+                    # Parse arguments
+                    try:
+                        tool_args = json.loads(tool_args_str) if tool_args_str else {}
+                    except json.JSONDecodeError:
+                        tool_args = {}
+                    
+                    # Execute tool
+                    if tool_name in all_tools:
+                        command = all_tools[tool_name]["command"]
+                        result = execute_cli_tool(tool_name, command, tool_args)
+                    else:
+                        result = f"Error: Unknown tool '{tool_name}'"
+                    
+                    # Add tool result to conversation
+                    final_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result
+                    })
+                    
+                    tool_results.append(f"🔧 {tool_name}({tool_args_str}) → {result}")
+                
+                # Make follow-up API call with tool results
+                follow_up_response = moonshot_client.chat.completions.create(
+                    model=model,
+                    messages=final_messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                
+                output_text = follow_up_response.choices[0].message.content
+                
+                # Include tool execution details
+                tool_summary = "\n".join(tool_results)
+                final_output = f"{output_text}\n\n**Tool Executions:**\n{tool_summary}"
+                
+            else:
+                # Regular text response
+                output_text = message.content
+                
+                # If partial was used, prepend it to output for display
+                if partial_response:
+                    output_text = partial_response + output_text
+                
+                final_output = output_text
+            
+            # Track cost - estimate input from all messages
+            input_text = " ".join([m.get("content", "") for m in final_messages if isinstance(m.get("content"), str)])
+            cost_info = track_cost(model, input_text, final_output)
             
             return [types.TextContent(
                 type="text",
-                text=f"{output_text}\n\n---\n💰 Cost: ${cost_info['cost']:.6f} | Total: ${cost_info['cumulative']['total_cost']:.4f}"
+                text=f"{final_output}\n\n---\n💰 Cost: ${cost_info['cost']:.6f} | Total: ${cost_info['cumulative']['total_cost']:.4f}"
             )]
         except Exception as e:
-            return [types.TextContent(type="text", text=f"Kimi K2 Base error: {str(e)}")]
-    
-    elif name == "kimi_k2_instruct":
-        if not moonshot_client:
-            return [types.TextContent(
-                type="text",
-                text="Error: Moonshot API key not configured. Set MOONSHOT_API_KEY in .env"
-            )]
-        
-        prompt = arguments["prompt"]
-        system = arguments.get("system", "You are Kimi, an AI assistant created by Moonshot AI.")
-        temperature = arguments.get("temperature", 0.6)
-        max_tokens = arguments.get("max_tokens", 4096)
-        
-        try:
-            # Use chat completions for the instruct model
-            response = moonshot_client.chat.completions.create(
-                model="kimi-k2-instruct",
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
-            
-            # Track cost
-            output_text = response.choices[0].message.content
-            cost_info = track_cost("kimi-k2-instruct", prompt, output_text)
-            
-            return [types.TextContent(
-                type="text",
-                text=f"{output_text}\n\n---\n💰 Cost: ${cost_info['cost']:.6f} | Total: ${cost_info['cumulative']['total_cost']:.4f}"
-            )]
-        except Exception as e:
-            return [types.TextContent(type="text", text=f"Kimi K2 Instruct error: {str(e)}")]
+            return [types.TextContent(type="text", text=f"Kimi Chat error: {str(e)}")]
     
     elif name == "check_costs":
         # Generate cost report

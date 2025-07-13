@@ -119,24 +119,259 @@ Parameters:
 - task_type: "analysis", "generation", "simple", or "auto"
 ```
 
-### kimi_k2_base
-Use Kimi K2 Base model (1T params) for raw completions and experimentation.
+### kimi_chat
+Flexible Kimi/Moonshot chat interface supporting simple prompts, multi-turn conversations, and partial pre-filling.
 ```
-Parameters:
-- prompt: The input prompt
+Parameters (all optional):
+- prompt: Simple prompt for single-turn, or latest user message
+- messages: Full conversation history array (overrides prompt if provided)
+  - Each message: {"role": "system/user/assistant", "content": "...", "name": "optional", "partial": true/false}
+- system: System message (used only if messages not provided)
+- partial_response: Pre-fill the assistant's response to maintain character/format
+- model: Model name - Common options:
+  - 'kimi-k2-0711-preview' (default) - Kimi K2 instruct model for chat, tool use, structured responses
+  - 'kimi-k2-base' - Base model for creative completions (when available via API)
+  - 'moonshot-v1-auto' - Automatically selects appropriate context size
+  - 'moonshot-v1-128k' - 128k context window
+  - Note: Currently only instruct models are available via API
 - temperature: Control randomness (0-1, default 0.6)
 - max_tokens: Maximum response length (default 4096)
+- available_tools: List of built-in tool names to enable (optional)
+  - Built-in tools: ["get_current_time", "add_numbers", "list_files"]
+- dynamic_tools: Array of custom tool definitions for on-the-fly CLI execution (optional)
+  - Each tool needs: name, command, and schema properties
+
+Usage modes:
+1. Simple: kimi_chat(prompt="Hello")
+2. With system: kimi_chat(system="You are a pirate", prompt="Tell me about treasure")
+3. Multi-turn: kimi_chat(messages=[...])
+4. With pre-filling: kimi_chat(prompt="...", partial_response="*thinks carefully* ")
+5. Full conversation + pre-fill: kimi_chat(messages=[...], partial_response="...")
+6. With built-in tools: kimi_chat(prompt="What time is it?", available_tools=["get_current_time"])
+7. With dynamic tools: kimi_chat(prompt="Check port 8080", dynamic_tools=[{...}])
 ```
 
-### kimi_k2_instruct
-Use Kimi K2 Instruct model for chat, tool use, and agentic tasks with 128k context.
+#### Dynamic Tool Generation
+
+The `kimi_chat` tool supports creating CLI tools on-the-fly using the `dynamic_tools` parameter:
+
+```python
+kimi_chat(
+    prompt="What's my public IP address?",
+    dynamic_tools=[{
+        "name": "get_public_ip",
+        "command": "curl -s ifconfig.me",
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "get_public_ip",
+                "description": "Get public IP address",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        }
+    }]
+)
 ```
-Parameters:
-- prompt: The user message or task
-- system: System message for behavior guidance (optional)
-- temperature: Control randomness (0-1, default 0.6)
-- max_tokens: Maximum response length (default 4096)
+
+**Dynamic Tool Examples:**
+
+```python
+# Network operations
+{
+    "name": "check_port",
+    "command": "netstat -an | grep :8080",
+    "schema": {...}
+}
+
+# File operations  
+{
+    "name": "find_large_files",
+    "command": "find . -size +100M -type f -exec ls -lh {} \\;",
+    "schema": {...}
+}
+
+# System information
+{
+    "name": "memory_usage", 
+    "command": "free -h",
+    "schema": {...}
+}
+
+# Git operations
+{
+    "name": "recent_commits",
+    "command": "git log --oneline -5", 
+    "schema": {...}
+}
 ```
+
+**Tool Execution Features:**
+- 30-second timeout for safety
+- Stdout/stderr capture  
+- Error handling and reporting
+- Works with any shell command
+- Combines with built-in tools seamlessly
+
+**Complete Dynamic Tool Example:**
+
+```python
+# Request: "Check if port 8080 is open and count Python files"
+kimi_chat(
+    prompt="Check if port 8080 is open and count Python files in this directory",
+    dynamic_tools=[
+        {
+            "name": "check_port_8080",
+            "command": "netstat -an | grep :8080",
+            "schema": {
+                "type": "function",
+                "function": {
+                    "name": "check_port_8080",
+                    "description": "Check if port 8080 is listening",
+                    "parameters": {"type": "object", "properties": {}, "required": []}
+                }
+            }
+        },
+        {
+            "name": "count_python_files", 
+            "command": "find . -name '*.py' -type f | wc -l",
+            "schema": {
+                "type": "function",
+                "function": {
+                    "name": "count_python_files",
+                    "description": "Count Python files in directory",
+                    "parameters": {"type": "object", "properties": {}, "required": []}
+                }
+            }
+        }
+    ]
+)
+
+# Result: 
+# "Port 8080 is not currently listening, and there are 3,234 Python files in this directory.
+# 
+# **Tool Executions:**
+# 🔧 check_port_8080({}) → (no output - port not listening)
+# 🔧 count_python_files({}) → 3234"
+```
+```
+
+## Kimi K2 Tool Calling Capabilities
+
+Kimi K2 has native tool-calling capabilities that allow it to autonomously execute functions and orchestrate workflows. The model can:
+
+- **Autonomous Task Decomposition**: Break down complex requests into tool sequences
+- **Multiple Tool Calls**: Execute several functions in a single response
+- **Parameter Parsing**: Correctly extract and format function arguments
+- **Context Preservation**: Maintain conversation state throughout tool interactions
+
+### Tool Calling API Flow
+
+The tool calling process follows OpenAI's tools format:
+
+#### 1. Tool Definition
+Tools are defined using JSON schemas:
+```json
+{
+  "type": "function",
+  "function": {
+    "name": "get_current_time",
+    "description": "Get the current date and time",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  }
+}
+```
+
+#### 2. Tool Call Request
+When Kimi wants to use a tool, it responds with:
+```json
+{
+  "role": "assistant",
+  "content": "I'll get the current time for you.",
+  "tool_calls": [
+    {
+      "index": 0,
+      "id": "get_current_time:0",
+      "type": "function",
+      "function": {
+        "name": "get_current_time",
+        "arguments": "{}"
+      }
+    }
+  ]
+}
+```
+
+#### 3. Tool Execution
+Your application executes the function and returns results:
+```json
+{
+  "role": "tool",
+  "tool_call_id": "get_current_time:0",
+  "content": "2025-07-12 14:30:45"
+}
+```
+
+#### 4. Final Response
+Kimi synthesizes the tool results into natural language:
+```json
+{
+  "role": "assistant",
+  "content": "It is currently 2:30:45 PM on July 12, 2025."
+}
+```
+
+### Example: Multiple Tool Calls
+
+**Request:**
+```
+"What time is it, and then add 10 plus 5?"
+```
+
+**Kimi's Response:**
+```json
+{
+  "tool_calls": [
+    {
+      "id": "get_current_time:0",
+      "function": {"name": "get_current_time", "arguments": "{}"}
+    },
+    {
+      "id": "add_numbers:1", 
+      "function": {"name": "add_numbers", "arguments": "{\"a\": 10, \"b\": 5}"}
+    }
+  ]
+}
+```
+
+**Tool Results:**
+```json
+[
+  {"role": "tool", "tool_call_id": "get_current_time:0", "content": "2025-07-12 14:45:30"},
+  {"role": "tool", "tool_call_id": "add_numbers:1", "content": "15"}
+]
+```
+
+**Final Response:**
+```
+"It's currently **2:45:30 PM** on July 12, 2025.
+And **10 + 5 = 15**."
+```
+
+### Key Implementation Notes
+
+- **Tool Call IDs**: Each tool call has a unique ID (e.g., `"function_name:index"`)
+- **Argument Format**: Function arguments are JSON strings, even for simple parameters
+- **Multiple Tools**: Kimi can call multiple tools in one response for complex requests
+- **Error Handling**: Tool execution errors should be returned as tool messages for Kimi to handle
+- **Streaming**: Tool calls work with both streaming and non-streaming API calls
 
 ### check_costs
 Check cumulative costs for all LLM usage in this session.
@@ -165,6 +400,39 @@ formatted = quick_gpt(
 response = route_to_best_model(
     prompt="Explain the authentication flow",
     task_type="analysis"
+)
+
+# Kimi/Moonshot examples
+# Simple query
+answer = kimi_chat(prompt="What is quantum computing?")
+
+# Role-playing with system message
+story = kimi_chat(
+    system="You are a wise wizard who speaks in riddles",
+    prompt="Tell me about dragons"
+)
+
+# Multi-turn conversation
+chat = kimi_chat(
+    messages=[
+        {"role": "system", "content": "You are a helpful coding assistant"},
+        {"role": "user", "content": "How do I sort a list in Python?"},
+        {"role": "assistant", "content": "You can use the sorted() function or list.sort() method."},
+        {"role": "user", "content": "What's the difference?"}
+    ]
+)
+
+# With partial pre-filling for character consistency
+response = kimi_chat(
+    system="You are Dr. Kelsier from Arknights",
+    prompt="What do you think about the current situation?",
+    partial_response="*adjusts her monocle with a slight frown* The situation, you ask? "
+)
+
+# Using different Moonshot models
+auto_response = kimi_chat(
+    prompt="Explain quantum computing",
+    model="moonshot-v1-auto"  # Automatically selects context size
 )
 ```
 
