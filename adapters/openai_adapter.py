@@ -113,6 +113,16 @@ class OpenAIAdapter(BaseAdapter):
         # Format messages
         formatted_messages = self.format_messages(messages)
         
+        # Debug
+        import sys
+        print(f"\n=== DEBUG: OpenAI Adapter ===", file=sys.stderr)
+        print(f"Model: {model} -> {actual_model}", file=sys.stderr)
+        print(f"Input messages count: {len(messages)}", file=sys.stderr)
+        print(f"Formatted messages count: {len(formatted_messages)}", file=sys.stderr)
+        for i, msg in enumerate(formatted_messages[:3]):
+            print(f"  Msg {i}: {msg.get('role', '?')}: {msg.get('content', '')[:50]}...", file=sys.stderr)
+        print("=== END DEBUG ===\n", file=sys.stderr)
+        
         # Prepare parameters
         params = {
             "model": actual_model,

@@ -368,21 +368,20 @@ unified_session_manager = None
 model_adapters = {}
 
 def initialize_unified_sessions():
-    """Initialize unified session management if enabled"""
+    """Initialize unified session management"""
     global unified_session_manager, model_adapters
     
-    if FeatureFlags.is_unified_sessions_enabled() and not FeatureFlags.is_legacy_mode():
-        unified_session_manager = SessionManager()
-        
-        # Initialize adapters
-        if os.getenv("GOOGLE_API_KEY"):
-            model_adapters["gemini"] = GeminiAdapter(api_key=os.getenv("GOOGLE_API_KEY"))
-        if os.getenv("OPENAI_API_KEY"):
-            model_adapters["openai"] = OpenAIAdapter(api_key=os.getenv("OPENAI_API_KEY"))
-        if os.getenv("MOONSHOT_API_KEY"):
-            model_adapters["kimi"] = KimiAdapter(api_key=os.getenv("MOONSHOT_API_KEY"))
-        if os.getenv("ANTHROPIC_API_KEY"):
-            model_adapters["anthropic"] = AnthropicAdapter(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    unified_session_manager = SessionManager()
+    
+    # Initialize adapters
+    if os.getenv("GOOGLE_API_KEY"):
+        model_adapters["gemini"] = GeminiAdapter(api_key=os.getenv("GOOGLE_API_KEY"))
+    if os.getenv("OPENAI_API_KEY"):
+        model_adapters["openai"] = OpenAIAdapter(api_key=os.getenv("OPENAI_API_KEY"))
+    if os.getenv("MOONSHOT_API_KEY"):
+        model_adapters["kimi"] = KimiAdapter(api_key=os.getenv("MOONSHOT_API_KEY"))
+    if os.getenv("ANTHROPIC_API_KEY"):
+        model_adapters["anthropic"] = AnthropicAdapter(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 def get_adapter_for_model(model: str) -> Optional[Any]:
     """Get the appropriate adapter for a model"""
@@ -459,24 +458,40 @@ async def _chat_unified(
                     reason="User requested different model"
                 )
     
-    # Add new messages to session if not already there
+    # Add new messages to session
     if session:
-        existing_count = len(session["messages"])
-        for i, msg in enumerate(messages):
-            # Skip messages already in session
-            if i < existing_count:
-                continue
-            
+        # Just add all messages from the current request
+        # They are always new since 'messages' only contains the current request
+        for msg in messages:
             unified_session_manager.add_message(
                 session_id,
                 msg["role"],
                 msg["content"],
                 metadata=msg.get("metadata", {})
             )
+        
+        # Reload session to get the updated messages
+        session = unified_session_manager.load_session(session_id)
+    
+    # Use full session history if available, otherwise just the new messages
+    messages_to_send = session["messages"] if session else messages
+    
+    # Debug: Print what we're sending
+    import sys
+    print(f"\n=== DEBUG: _chat_unified ===", file=sys.stderr)
+    print(f"Session ID: {session_id}", file=sys.stderr)
+    print(f"Model: {model}", file=sys.stderr)
+    print(f"Session exists: {session is not None}", file=sys.stderr)
+    if session:
+        print(f"Session messages count: {len(session['messages'])}", file=sys.stderr)
+    print(f"Messages to send count: {len(messages_to_send)}", file=sys.stderr)
+    for i, msg in enumerate(messages_to_send[:5]):  # First 5 messages
+        print(f"  Msg {i}: {msg.get('role', 'unknown')}: {msg.get('content', '')[:50]}...", file=sys.stderr)
+    print("=== END DEBUG ===\n", file=sys.stderr)
     
     # Create completion
     response_content, metadata = adapter.create_completion(
-        messages,
+        messages_to_send,
         model,
         temperature=temperature,
         max_tokens=max_tokens,
@@ -559,7 +574,7 @@ async def handle_list_tools() -> list[types.Tool]:
                     },
                     "session_id": {
                         "type": "string",
-                        "description": "Session ID for conversation persistence (only with LLM_UNIFIED=1)"
+                        "description": "Session ID for conversation persistence"
                     }
                 },
                 "required": ["prompt"]
@@ -582,7 +597,7 @@ async def handle_list_tools() -> list[types.Tool]:
                     },
                     "session_id": {
                         "type": "string",
-                        "description": "Session ID for conversation persistence (only with LLM_UNIFIED=1)"
+                        "description": "Session ID for conversation persistence"
                     }
                 },
                 "required": ["prompt"]
@@ -728,65 +743,10 @@ async def handle_call_tool(
     """Handle tool execution"""
     
     if name == "analyze_with_gemini":
-        # Check if unified sessions are enabled
-        if FeatureFlags.is_unified_sessions_enabled() and not FeatureFlags.is_legacy_mode():
-            prompt = arguments["prompt"]
-            files = arguments.get("files", [])
-            context = arguments.get("context", "")
-            session_id = arguments.get("session_id", None)
-            
-            # Load files if provided
-            if files:
-                file_contents = []
-                for pattern in files:
-                    for filepath in glob.glob(pattern, recursive=True):
-                        if Path(filepath).is_file():
-                            try:
-                                with open(filepath, 'r', encoding='utf-8') as f:
-                                    content = f.read()
-                                    file_contents.append(f"=== {filepath} ===\n{content}\n")
-                            except Exception as e:
-                                file_contents.append(f"=== {filepath} ===\nError reading: {e}\n")
-                
-                context = "\n".join(file_contents) + "\n" + context
-            
-            # Prepare prompt with context
-            full_prompt = f"Context:\n{context}\n\nQuery: {prompt}" if context else prompt
-            
-            try:
-                # Use unified chat
-                messages = [{"role": "user", "content": full_prompt}]
-                response_content, metadata = await _chat_unified(
-                    messages=messages,
-                    model="gemini-2.5-pro",
-                    session_id=session_id,
-                    max_tokens=8192
-                )
-                
-                # Format response with cost info
-                cost_str = ""
-                if "cost" in metadata:
-                    cost_str = f"\n\n---\n💰 Cost: ${metadata['cost']:.6f}"
-                    if cost_tracker.get("gemini-2.5-pro"):
-                        cost_str += f" | Total: ${cost_tracker['gemini-2.5-pro']['total_cost']:.4f}"
-                
-                return [types.TextContent(
-                    type="text",
-                    text=f"{response_content}{cost_str}"
-                )]
-            except Exception as e:
-                return [types.TextContent(type="text", text=f"Unified Gemini error: {str(e)}")]
-        
-        # Legacy implementation
-        if not gemini_pro_model:
-            return [types.TextContent(
-                type="text",
-                text="Error: Gemini API key not configured. Set GOOGLE_API_KEY in .env"
-            )]
-        
         prompt = arguments["prompt"]
         files = arguments.get("files", [])
         context = arguments.get("context", "")
+        session_id = arguments.get("session_id", None)
         
         # Load files if provided
         if files:
@@ -807,76 +767,55 @@ async def handle_call_tool(
         full_prompt = f"Context:\n{context}\n\nQuery: {prompt}" if context else prompt
         
         try:
-            # Gemini 2.5 Pro has a massive context window
-            response = gemini_pro_model.generate_content(full_prompt)
+            # Use unified chat
+            messages = [{"role": "user", "content": full_prompt}]
+            response_content, metadata = await _chat_unified(
+                messages=messages,
+                model="gemini-2.5-pro",
+                session_id=session_id,
+                max_tokens=8192
+            )
             
-            # Track cost
-            cost_info = track_cost("gemini-2.5-pro", full_prompt, response.text)
+            # Format response with cost info
+            cost_str = ""
+            if "cost" in metadata:
+                cost_str = f"\n\n---\n💰 Cost: ${metadata['cost']:.6f}"
+                if cost_tracker.get("gemini-2.5-pro"):
+                    cost_str += f" | Total: ${cost_tracker['gemini-2.5-pro']['total_cost']:.4f}"
             
             return [types.TextContent(
-                type="text", 
-                text=f"{response.text}\n\n---\n💰 Cost: ${cost_info['cost']:.6f} | Total: ${cost_info['cumulative']['total_cost']:.4f}"
+                type="text",
+                text=f"{response_content}{cost_str}"
             )]
         except Exception as e:
             return [types.TextContent(type="text", text=f"Gemini error: {str(e)}")]
     
     elif name == "quick_gpt":
-        # Check if unified sessions are enabled
-        if FeatureFlags.is_unified_sessions_enabled() and not FeatureFlags.is_legacy_mode():
-            prompt = arguments["prompt"]
-            temperature = arguments.get("temperature", 0.3)
-            session_id = arguments.get("session_id", None)
-            
-            try:
-                # Use unified chat
-                messages = [{"role": "user", "content": prompt}]
-                response_content, metadata = await _chat_unified(
-                    messages=messages,
-                    model="gpt-4.1-nano",
-                    session_id=session_id,
-                    temperature=temperature,
-                    max_tokens=500  # Keep responses quick
-                )
-                
-                # Format response with cost info
-                cost_str = ""
-                if "cost" in metadata:
-                    cost_str = f"\n\n---\n💰 Cost: ${metadata['cost']:.6f}"
-                    if cost_tracker.get("gpt-4.1-nano"):
-                        cost_str += f" | Total: ${cost_tracker['gpt-4.1-nano']['total_cost']:.4f}"
-                
-                return [types.TextContent(
-                    type="text",
-                    text=f"{response_content}{cost_str}"
-                )]
-            except Exception as e:
-                return [types.TextContent(type="text", text=f"Unified OpenAI error: {str(e)}")]
-        
-        # Legacy implementation
-        if not openai_client:
-            return [types.TextContent(
-                type="text",
-                text="Error: OpenAI API key not configured. Set OPENAI_API_KEY in .env"
-            )]
-        
         prompt = arguments["prompt"]
         temperature = arguments.get("temperature", 0.3)
+        session_id = arguments.get("session_id", None)
         
         try:
-            response = openai_client.chat.completions.create(
+            # Use unified chat
+            messages = [{"role": "user", "content": prompt}]
+            response_content, metadata = await _chat_unified(
+                messages=messages,
                 model="gpt-4.1-nano",
-                messages=[{"role": "user", "content": prompt}],
+                session_id=session_id,
                 temperature=temperature,
                 max_tokens=500  # Keep responses quick
             )
             
-            # Track cost
-            output_text = response.choices[0].message.content
-            cost_info = track_cost("gpt-4.1-nano", prompt, output_text)
+            # Format response with cost info
+            cost_str = ""
+            if "cost" in metadata:
+                cost_str = f"\n\n---\n💰 Cost: ${metadata['cost']:.6f}"
+                if cost_tracker.get("gpt-4.1-nano"):
+                    cost_str += f" | Total: ${cost_tracker['gpt-4.1-nano']['total_cost']:.4f}"
             
             return [types.TextContent(
                 type="text",
-                text=f"{output_text}\n\n---\n💰 Cost: ${cost_info['cost']:.6f} | Total: ${cost_info['cumulative']['total_cost']:.4f}"
+                text=f"{response_content}{cost_str}"
             )]
         except Exception as e:
             return [types.TextContent(type="text", text=f"OpenAI error: {str(e)}")]

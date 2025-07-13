@@ -5,54 +5,7 @@ from typing import Optional
 
 
 class FeatureFlags:
-    """Manage feature flags for incremental rollout"""
-    
-    @staticmethod
-    def is_unified_sessions_enabled() -> bool:
-        """Check if unified session management is enabled
-        
-        Enable by setting environment variable:
-        - LLM_UNIFIED=1
-        - LLM_UNIFIED=true
-        - LLM_UNIFIED=yes
-        
-        Returns:
-            bool: True if unified sessions are enabled
-        """
-        return os.getenv('LLM_UNIFIED', '').lower() in ('1', 'true', 'yes')
-    
-    @staticmethod
-    def is_legacy_mode() -> bool:
-        """Check if forced legacy mode is enabled
-        
-        Force legacy mode by setting environment variable:
-        - LLM_LEGACY=1
-        - LLM_LEGACY=true
-        - LLM_LEGACY=yes
-        
-        This overrides LLM_UNIFIED if both are set.
-        
-        Returns:
-            bool: True if legacy mode is forced
-        """
-        return os.getenv('LLM_LEGACY', '').lower() in ('1', 'true', 'yes')
-    
-    @staticmethod
-    def is_dual_write_enabled() -> bool:
-        """Check if dual-write mode is enabled
-        
-        In dual-write mode, sessions are written to both old and new formats
-        for safety during migration period.
-        
-        Enable by setting environment variable:
-        - LLM_DUAL_WRITE=1
-        - LLM_DUAL_WRITE=true
-        - LLM_DUAL_WRITE=yes
-        
-        Returns:
-            bool: True if dual-write mode is enabled
-        """
-        return os.getenv('LLM_DUAL_WRITE', '').lower() in ('1', 'true', 'yes')
+    """Configuration flags for LLM MCP Server features"""
     
     @staticmethod
     def get_migration_batch_size() -> int:
@@ -129,15 +82,12 @@ class FeatureFlags:
     
     @staticmethod
     def get_active_features() -> dict:
-        """Get summary of all active feature flags
+        """Get summary of all active configuration flags
         
         Returns:
             dict: Dictionary of feature names and their states
         """
         return {
-            'unified_sessions': FeatureFlags.is_unified_sessions_enabled(),
-            'legacy_mode': FeatureFlags.is_legacy_mode(),
-            'dual_write': FeatureFlags.is_dual_write_enabled(),
             'session_compression': FeatureFlags.is_session_compression_enabled(),
             'compression_threshold': FeatureFlags.get_compression_threshold(),
             'sqlite_index': FeatureFlags.is_sqlite_index_enabled(),

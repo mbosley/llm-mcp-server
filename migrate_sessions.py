@@ -291,13 +291,7 @@ def main():
     
     args = parser.parse_args()
     
-    # Check if unified sessions are enabled
-    if not FeatureFlags.is_unified_sessions_enabled():
-        print("⚠️  WARNING: Unified sessions are not enabled!")
-        print("To enable, set environment variable: export LLM_UNIFIED=1")
-        response = input("\nContinue anyway? [y/N]: ")
-        if response.lower() != 'y':
-            return
+    print("🔄 Starting Kimi session migration to unified format...")
     
     # Create migrator
     migrator = SessionMigrator(
