@@ -7,4 +7,7 @@ venv/
 
 # claudepm
 .claudepm
-.background-task.log
+.background-task.log.claude
+
+# Kimi conversation sessions
+.kimi_sessions/

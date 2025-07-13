@@ -7,11 +7,12 @@ import os
 import json
 import asyncio
 import subprocess
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 import glob
 from datetime import datetime
 from collections import defaultdict
+import time
 
 from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
@@ -130,6 +131,95 @@ def execute_cli_tool(tool_name: str, command: str, arguments: Dict[str, Any]) ->
         return f"Error: Tool '{tool_name}' timed out after 30 seconds"
     except Exception as e:
         return f"Error executing {tool_name}: {str(e)}"
+
+# Kimi conversation session management
+KIMI_SESSIONS_DIR = Path(".kimi_sessions")
+# Create directory only when needed, not at module load
+# KIMI_SESSIONS_DIR.mkdir(exist_ok=True)
+
+def save_session(session_id: str, messages: List[Dict], metadata: Dict = None) -> None:
+    """Save a conversation session to disk"""
+    KIMI_SESSIONS_DIR.mkdir(exist_ok=True)  # Ensure directory exists
+    session_file = KIMI_SESSIONS_DIR / f"{session_id}.json"
+    session_data = {
+        "session_id": session_id,
+        "messages": messages,
+        "metadata": metadata or {},
+        "created": metadata.get("created", datetime.now().isoformat()),
+        "last_accessed": datetime.now().isoformat(),
+        "message_count": len(messages),
+        "topics": metadata.get("topics", session_id.split("_")[0].split("-"))  # Extract topics from ID
+    }
+    
+    with open(session_file, "w") as f:
+        json.dump(session_data, f, indent=2)
+
+def load_session(session_id: str) -> Optional[Dict]:
+    """Load a conversation session from disk"""
+    if session_id == "@last":
+        # Find the most recently accessed session
+        sessions = list(KIMI_SESSIONS_DIR.glob("*.json"))
+        if not sessions:
+            return None
+        latest = max(sessions, key=lambda p: p.stat().st_mtime)
+        session_id = latest.stem
+    
+    session_file = KIMI_SESSIONS_DIR / f"{session_id}.json"
+    if not session_file.exists():
+        return None
+    
+    with open(session_file, "r") as f:
+        return json.load(f)
+
+def list_sessions() -> List[Dict]:
+    """List all available sessions"""
+    sessions = []
+    if not KIMI_SESSIONS_DIR.exists():
+        return sessions
+    for session_file in KIMI_SESSIONS_DIR.glob("*.json"):
+        try:
+            with open(session_file, "r") as f:
+                data = json.load(f)
+                sessions.append({
+                    "session_id": data["session_id"],
+                    "created": data.get("created", "Unknown"),
+                    "last_accessed": data.get("last_accessed", "Unknown"),
+                    "message_count": data.get("message_count", 0)
+                })
+        except:
+            continue
+    
+    return sorted(sessions, key=lambda x: x["last_accessed"], reverse=True)
+
+def clear_session(session_id: str) -> bool:
+    """Clear a specific session or all sessions"""
+    if session_id == "@all":
+        for session_file in KIMI_SESSIONS_DIR.glob("*.json"):
+            session_file.unlink()
+        return True
+    else:
+        session_file = KIMI_SESSIONS_DIR / f"{session_id}.json"
+        if session_file.exists():
+            session_file.unlink()
+            return True
+    return False
+
+def truncate_messages_for_context(messages: List[Dict], max_tokens: int = 100000) -> List[Dict]:
+    """Truncate old messages if conversation is too long"""
+    # Simple truncation - in production you'd count actual tokens
+    # Keep system message and recent messages
+    if not messages:
+        return messages
+    
+    system_msgs = [m for m in messages if m.get("role") == "system"]
+    other_msgs = [m for m in messages if m.get("role") != "system"]
+    
+    # Keep last N messages (rough approximation)
+    max_messages = 50  # Adjust based on typical message length
+    if len(other_msgs) > max_messages:
+        other_msgs = other_msgs[-max_messages:]
+    
+    return system_msgs + other_msgs
 
 # Built-in tool definitions (examples)
 BUILTIN_TOOLS = {
@@ -443,6 +533,15 @@ async def handle_list_tools() -> list[types.Tool]:
                             },
                             "required": ["name", "command", "schema"]
                         }
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session ID for persistent conversations. Use '@last' to continue most recent, '@list' to list sessions, '@clear:id' to clear. For new sessions, use format: 'keyword1-keyword2-keyword3' (will auto-append timestamp)"
+                    },
+                    "return_conversation": {
+                        "type": "boolean",
+                        "description": "Return the full conversation history along with the response",
+                        "default": False
                     }
                 },
                 "required": []
@@ -618,18 +717,90 @@ async def handle_call_tool(
         max_tokens = arguments.get("max_tokens", 4096)
         available_tools = arguments.get("available_tools", None)
         dynamic_tools = arguments.get("dynamic_tools", None)
+        session_id = arguments.get("session_id", None)
+        return_conversation = arguments.get("return_conversation", False)
         
-        # Build messages array
-        if messages:
-            # Use provided message history
-            final_messages = messages.copy()
+        # Handle special session commands
+        if session_id and session_id.startswith("@"):
+            if session_id == "@list":
+                sessions = list_sessions()
+                if not sessions:
+                    return [types.TextContent(type="text", text="No active sessions found.")]
+                
+                report = "## Active Kimi Sessions\n\n"
+                for sess in sessions:
+                    # Parse session ID to extract base topics
+                    base_topics = sess['session_id'].split('_')[0].replace('-', ' ')
+                    created_date = sess['created'].split('T')[0] if 'T' in sess['created'] else sess['created']
+                    last_date = sess['last_accessed'].split('T')[0] if 'T' in sess['last_accessed'] else sess['last_accessed']
+                    
+                    report += f"- **{sess['session_id']}**\n"
+                    report += f"  - Topics: {base_topics}\n"
+                    report += f"  - Messages: {sess['message_count']}\n"
+                    report += f"  - Created: {created_date}\n"
+                    report += f"  - Last accessed: {last_date}\n\n"
+                return [types.TextContent(type="text", text=report)]
+            
+            elif session_id.startswith("@clear:"):
+                sess_to_clear = session_id[7:]  # Remove "@clear:"
+                if clear_session(sess_to_clear):
+                    return [types.TextContent(type="text", text=f"Session '{sess_to_clear}' cleared successfully.")]
+                else:
+                    return [types.TextContent(type="text", text=f"Session '{sess_to_clear}' not found.")]
+        
+        # Load session if specified
+        session_metadata = {}
+        actual_session_id = None  # Initialize for all code paths
+        if session_id and not session_id.startswith("@clear"):
+            # First try to load the session (handles @last)
+            session_data = load_session(session_id)
+            
+            if session_data:
+                # Session exists (or @last resolved to existing session)
+                actual_session_id = session_data.get("session_id", session_id)
+            else:
+                # New session - check if it needs timestamp
+                if not any(session_id.endswith(f"_{i}") for i in range(10)) and "_" not in session_id[-5:]:
+                    # This looks like a new session with keywords, add timestamp
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+                    actual_session_id = f"{session_id}_{timestamp}"
+                else:
+                    # Already has timestamp
+                    actual_session_id = session_id
+            
+            if session_data:
+                # Continue existing session
+                final_messages = session_data["messages"].copy()
+                session_metadata = session_data.get("metadata", {})
+                
+                # Add new prompt if provided
+                if prompt:
+                    final_messages.append({"role": "user", "content": prompt})
+            else:
+                # Start new session
+                final_messages = []
+                if system:
+                    final_messages.append({"role": "system", "content": system})
+                if prompt:
+                    final_messages.append({"role": "user", "content": prompt})
+                session_metadata["created"] = datetime.now().isoformat()
+                
+                # Extract topics from session ID
+                if actual_session_id:
+                    base_id = actual_session_id.split("_")[0]
+                    session_metadata["topics"] = base_id.split("-")
         else:
-            # Build from simple inputs
-            final_messages = []
-            if system:
-                final_messages.append({"role": "system", "content": system})
-            if prompt:
-                final_messages.append({"role": "user", "content": prompt})
+            # Build messages from inputs (no session)
+            if messages:
+                # Use provided message history
+                final_messages = messages.copy()
+            else:
+                # Build from simple inputs
+                final_messages = []
+                if system:
+                    final_messages.append({"role": "system", "content": system})
+                if prompt:
+                    final_messages.append({"role": "user", "content": prompt})
         
         # Add partial pre-filling if requested
         if partial_response:
@@ -760,14 +931,38 @@ async def handle_call_tool(
                 
                 final_output = output_text
             
+            # Add assistant's response to conversation
+            if final_output:
+                # For tool responses, we already added the assistant message
+                if not (hasattr(message, 'tool_calls') and message.tool_calls):
+                    final_messages.append({"role": "assistant", "content": final_output})
+            
+            # Save session if specified
+            if actual_session_id or (session_id and not session_id.startswith("@")):
+                # Use actual_session_id if available (for new sessions with timestamp)
+                save_id = actual_session_id or session_id
+                # Truncate if too long before saving
+                truncated_messages = truncate_messages_for_context(final_messages)
+                save_session(save_id, truncated_messages, session_metadata)
+            
             # Track cost - estimate input from all messages
             input_text = " ".join([m.get("content", "") for m in final_messages if isinstance(m.get("content"), str)])
             cost_info = track_cost(model, input_text, final_output)
             
-            return [types.TextContent(
-                type="text",
-                text=f"{final_output}\n\n---\n💰 Cost: ${cost_info['cost']:.6f} | Total: ${cost_info['cumulative']['total_cost']:.4f}"
-            )]
+            # Prepare response
+            response_text = f"{final_output}\n\n---\n💰 Cost: ${cost_info['cost']:.6f} | Total: ${cost_info['cumulative']['total_cost']:.4f}"
+            
+            # Return conversation if requested
+            if return_conversation:
+                return [
+                    types.TextContent(type="text", text=response_text),
+                    types.TextContent(
+                        type="text", 
+                        text=f"\n\n---\n🗨️ Conversation State:\n```json\n{json.dumps(final_messages, indent=2)}\n```"
+                    )
+                ]
+            else:
+                return [types.TextContent(type="text", text=response_text)]
         except Exception as e:
             return [types.TextContent(type="text", text=f"Kimi Chat error: {str(e)}")]
     

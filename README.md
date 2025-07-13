@@ -140,6 +140,11 @@ Parameters (all optional):
   - Built-in tools: ["get_current_time", "add_numbers", "list_files"]
 - dynamic_tools: Array of custom tool definitions for on-the-fly CLI execution (optional)
   - Each tool needs: name, command, and schema properties
+- session_id: Persistent conversation management (optional)
+  - New sessions: Use descriptive keywords like "python-async-debugging" (auto-timestamped)
+  - Continue existing: Use full ID like "python-async-debugging_20250712_2055"
+  - Special commands: "@last" (continue most recent), "@list" (show all sessions), "@clear:id" (delete session)
+- return_conversation: Return full conversation history with response (default: false)
 
 Usage modes:
 1. Simple: kimi_chat(prompt="Hello")
@@ -149,7 +154,51 @@ Usage modes:
 5. Full conversation + pre-fill: kimi_chat(messages=[...], partial_response="...")
 6. With built-in tools: kimi_chat(prompt="What time is it?", available_tools=["get_current_time"])
 7. With dynamic tools: kimi_chat(prompt="Check port 8080", dynamic_tools=[{...}])
+8. Start new session: kimi_chat(prompt="Let's discuss Python", session_id="python-basics")
+9. Continue session: kimi_chat(prompt="Tell me more", session_id="python-basics_20250712_2055")
+10. Continue last session: kimi_chat(prompt="What were we discussing?", session_id="@last")
+11. List sessions: kimi_chat(session_id="@list")
+12. Get conversation state: kimi_chat(prompt="Hello", return_conversation=true)
 ```
+
+#### Session Management
+
+Kimi conversations can be persisted to disk for long-term continuity:
+
+**Session Storage:**
+- Sessions are stored in `.kimi_sessions/` directory (gitignored)
+- Each session is a JSON file with messages, metadata, and timestamps
+- Session IDs use format: `keywords_YYYYMMDD_HHMM`
+
+**Example Session Workflow:**
+```python
+# Start a new project discussion
+kimi_chat(
+    prompt="I need help designing a REST API",
+    session_id="api-design"  # Creates: api-design_20250712_2100.json
+)
+
+# Continue later (use full ID)
+kimi_chat(
+    prompt="What about authentication?",
+    session_id="api-design_20250712_2100"
+)
+
+# Or continue the most recent session
+kimi_chat(
+    prompt="Should we use JWT or sessions?",
+    session_id="@last"
+)
+
+# Check all active sessions
+kimi_chat(session_id="@list")
+```
+
+**Session Features:**
+- Automatic message truncation when approaching context limits
+- Topic extraction from session IDs for easy identification
+- Timestamps for creation and last access
+- Session metadata preservation
 
 #### Dynamic Tool Generation
 
