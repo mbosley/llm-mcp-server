@@ -15,6 +15,10 @@ import shutil
 import gzip
 
 from utils.feature_flags import FeatureFlags
+from utils.logging_config import setup_logging
+
+# Set up logger for this module
+logger = setup_logging(__name__)
 
 
 class SessionManager:
@@ -33,6 +37,7 @@ class SessionManager:
         
         # Thread safety
         self._lock = threading.RLock()
+        self._cache_lock = threading.RLock()  # Separate lock for cache operations
         self._file_locks = {}
         
         # LRU cache for frequently accessed sessions
@@ -137,8 +142,9 @@ class SessionManager:
             content = json.dumps(session_data, indent=2, ensure_ascii=False)
             
             # Compress if enabled and session is large
+            compression_threshold = FeatureFlags.get_compression_threshold()
             if (FeatureFlags.is_session_compression_enabled() and 
-                len(content) > 10240):  # 10KB threshold
+                len(content) > compression_threshold):
                 content = gzip.compress(content.encode('utf-8'))
                 os.write(temp_fd, content)
             else:
@@ -178,8 +184,19 @@ class SessionManager:
         with self._lock:
             # Generate session ID if not provided
             if not session_id:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                session_id = f"unified_{timestamp}_{uuid.uuid4().hex[:8]}"
+                # Generate unique session ID with collision detection
+                max_attempts = 10
+                for attempt in range(max_attempts):
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    session_id = f"unified_{timestamp}_{uuid.uuid4().hex[:8]}"
+                    
+                    # Check if session already exists
+                    session_path = self._get_session_path(session_id)
+                    if not session_path.exists():
+                        break
+                else:
+                    # If we couldn't find a unique ID after max attempts, use full UUID
+                    session_id = f"unified_{timestamp}_{uuid.uuid4().hex}"
             
             # Create unified session structure
             session = {
@@ -218,6 +235,8 @@ class SessionManager:
             # Create view symlinks
             self._create_session_views(session)
             
+            logger.info(f"Created new session: {session_id} with model: {model}")
+            
             return session
     
     def load_session(self, session_id: str) -> Optional[Dict]:
@@ -229,12 +248,20 @@ class SessionManager:
         Returns:
             Session data or None if not found
         """
-        with self._lock:
-            # Check cache first
+        # Check cache first with cache lock
+        with self._cache_lock:
             if session_id in self._session_cache:
-                # Move to end (LRU)
+                # Move to end (LRU) atomically
                 self._session_cache.move_to_end(session_id)
                 return self._session_cache[session_id].copy()
+        
+        # Load from file with main lock
+        with self._lock:
+            # Double-check cache after acquiring main lock
+            with self._cache_lock:
+                if session_id in self._session_cache:
+                    self._session_cache.move_to_end(session_id)
+                    return self._session_cache[session_id].copy()
             
             # Load from file
             session_path = self._get_session_path(session_id)
@@ -242,6 +269,9 @@ class SessionManager:
             
             if session:
                 self._update_cache(session_id, session)
+                logger.debug(f"Loaded session: {session_id}")
+            else:
+                logger.warning(f"Session not found: {session_id}")
             
             return session
     
@@ -264,6 +294,8 @@ class SessionManager:
             
             # Update views
             self._update_session_views(session)
+            
+            logger.debug(f"Saved session: {session_id}")
     
     def add_message(
         self,
@@ -313,6 +345,8 @@ class SessionManager:
             
             # Save session
             self.save_session(session)
+            
+            logger.debug(f"Added message to session {session_id}: role={role}, length={len(content)}")
             
             return session
     
@@ -366,6 +400,8 @@ class SessionManager:
                 f"Model switched from {old_model} to {new_model}. Reason: {reason or 'User requested'}",
                 metadata={"model_switch": True}
             )
+            
+            logger.info(f"Switched model for session {session_id}: {old_model} -> {new_model}")
             
             return session
     
@@ -444,9 +480,10 @@ class SessionManager:
             if not session_path.exists():
                 return False
             
-            # Remove from cache
-            if session_id in self._session_cache:
-                del self._session_cache[session_id]
+            # Remove from cache with cache lock
+            with self._cache_lock:
+                if session_id in self._session_cache:
+                    del self._session_cache[session_id]
             
             # Remove file
             session_path.unlink()
@@ -454,17 +491,25 @@ class SessionManager:
             # Remove views
             self._remove_session_views(session_id)
             
+            logger.info(f"Deleted session: {session_id}")
+            
             return True
     
     def _update_cache(self, session_id: str, session: Dict):
-        """Update the LRU cache"""
-        # Add to cache
-        self._session_cache[session_id] = session.copy()
-        self._session_cache.move_to_end(session_id)
-        
-        # Evict oldest if over capacity
-        while len(self._session_cache) > self._cache_size:
-            self._session_cache.popitem(last=False)
+        """Update the LRU cache with thread safety"""
+        with self._cache_lock:
+            # Check if cache size has changed
+            current_cache_size = FeatureFlags.get_session_cache_size()
+            if current_cache_size != self._cache_size:
+                self._cache_size = current_cache_size
+            
+            # Add to cache
+            self._session_cache[session_id] = session.copy()
+            self._session_cache.move_to_end(session_id)
+            
+            # Evict oldest if over capacity
+            while len(self._session_cache) > self._cache_size:
+                self._session_cache.popitem(last=False)
     
     def _create_session_views(self, session: Dict):
         """Create symlink views for a session"""

@@ -99,6 +99,21 @@ class FeatureFlags:
             return 50
     
     @staticmethod
+    def get_compression_threshold() -> int:
+        """Get size threshold for session compression
+        
+        Control compression threshold with:
+        - LLM_COMPRESSION_THRESHOLD=10240 (default: 10240 bytes = 10KB)
+        
+        Returns:
+            int: Size in bytes above which sessions will be compressed
+        """
+        try:
+            return int(os.getenv('LLM_COMPRESSION_THRESHOLD', '10240'))
+        except ValueError:
+            return 10240
+    
+    @staticmethod
     def is_sqlite_index_enabled() -> bool:
         """Check if SQLite session indexing is enabled
         
@@ -124,6 +139,7 @@ class FeatureFlags:
             'legacy_mode': FeatureFlags.is_legacy_mode(),
             'dual_write': FeatureFlags.is_dual_write_enabled(),
             'session_compression': FeatureFlags.is_session_compression_enabled(),
+            'compression_threshold': FeatureFlags.get_compression_threshold(),
             'sqlite_index': FeatureFlags.is_sqlite_index_enabled(),
             'cache_size': FeatureFlags.get_session_cache_size(),
             'migration_batch_size': FeatureFlags.get_migration_batch_size(),

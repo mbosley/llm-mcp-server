@@ -10,6 +10,10 @@ import argparse
 
 from session_manager import SessionManager
 from utils.feature_flags import FeatureFlags
+from utils.logging_config import setup_logging
+
+# Set up logger for this module
+logger = setup_logging(__name__)
 
 
 class SessionMigrator:
@@ -43,7 +47,7 @@ class SessionMigrator:
         """
         source_path = Path(source_dir)
         if not source_path.exists():
-            print(f"❌ Source directory not found: {source_dir}")
+            logger.error(f"Source directory not found: {source_dir}")
             return self.stats
         
         # Get batch size from feature flags
@@ -53,10 +57,8 @@ class SessionMigrator:
         session_files = list(source_path.glob("*.json"))
         self.stats["total"] = len(session_files)
         
-        print(f"\n📊 Found {len(session_files)} Kimi sessions to migrate")
-        print(f"   Batch size: {batch_size}")
-        print(f"   Dry run: {'Yes' if self.dry_run else 'No'}")
-        print(f"   Backup: {'Yes' if self.backup else 'No'}")
+        logger.info(f"Found {len(session_files)} Kimi sessions to migrate")
+        logger.info(f"Batch size: {batch_size}, Dry run: {'Yes' if self.dry_run else 'No'}, Backup: {'Yes' if self.backup else 'No'}")
         
         if self.backup and not self.dry_run:
             backup_dir = Path(f"{source_dir}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
