@@ -138,3 +138,16 @@ Did:
 Next: Consider adding session management CLI commands
 
 ---
+
+
+### 2025-07-13 17:57 - Added prompt constructor with file interpolation
+Did:
+- Created utils/prompt_constructor.py with file interpolation support
+- Supports {file:path}, {file:path:10-20}, and {files:*.py} patterns
+- Integrated into all LLM tools (analyze_with_gemini, quick_gpt, balanced_llm, kimi_chat)
+- Updated MCP tool descriptions to document the feature
+- Added comprehensive documentation in README.md
+- Tested all interpolation patterns successfully
+Next: Consider adding more advanced patterns like {file:path|grep:pattern}
+
+---

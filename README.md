@@ -429,6 +429,52 @@ Parameters: none
 Returns: Detailed cost breakdown by model
 ```
 
+## File Interpolation in Prompts
+
+All tools support automatic file interpolation using a simple syntax:
+
+### Single File
+```python
+# Include entire file
+analyze_with_gemini(
+    prompt="Review this code: {file:server.py}"
+)
+
+# Include specific line range
+quick_gpt(
+    prompt="Explain this function: {file:utils/helper.py:10-25}"
+)
+```
+
+### Multiple Files
+```python
+# Use glob patterns
+analyze_with_gemini(
+    prompt="Review all test files: {files:tests/*.py}"
+)
+
+# Mix multiple files
+kimi_chat(
+    prompt="Compare {file:old_version.py} with {file:new_version.py}"
+)
+```
+
+### Complex Examples
+```python
+# Combine with regular text
+analyze_with_gemini(
+    prompt="""Based on the README: {file:README.md}
+    
+    Please explain how this implementation works:
+    {file:core/engine.py:50-150}
+    
+    And how it relates to these tests:
+    {files:tests/test_engine*.py}"""
+)
+```
+
+The file contents are automatically read and inserted into your prompt, making it easy to reference code without manual copy-pasting.
+
 ## Usage Examples
 
 In Claude Code, these tools become available for use:

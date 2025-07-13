@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 
 # Import unified session components
 from utils.feature_flags import FeatureFlags
+from utils.prompt_constructor import construct_prompt
 from session_manager import SessionManager
 from adapters import (
     GeminiAdapter, OpenAIAdapter, KimiAdapter, AnthropicAdapter
@@ -561,7 +562,7 @@ async def handle_list_tools() -> list[types.Tool]:
                 "properties": {
                     "prompt": {
                         "type": "string",
-                        "description": "The analysis query"
+                        "description": "The analysis query. Supports file interpolation: {file:path/to/file.py}, {file:path:10-20}, {files:*.py}"
                     },
                     "files": {
                         "type": "array",
@@ -588,7 +589,7 @@ async def handle_list_tools() -> list[types.Tool]:
                 "properties": {
                     "prompt": {
                         "type": "string",
-                        "description": "The task or question"
+                        "description": "The task or question. Supports file interpolation: {file:path/to/file.py}, {file:path:10-20}, {files:*.py}"
                     },
                     "temperature": {
                         "type": "number",
@@ -611,7 +612,7 @@ async def handle_list_tools() -> list[types.Tool]:
                 "properties": {
                     "prompt": {
                         "type": "string",
-                        "description": "The task or question"
+                        "description": "The task or question. Supports file interpolation: {file:path/to/file.py}, {file:path:10-20}, {files:*.py}"
                     },
                     "model": {
                         "type": "string",
@@ -636,7 +637,7 @@ async def handle_list_tools() -> list[types.Tool]:
                 "properties": {
                     "prompt": {
                         "type": "string",
-                        "description": "The task description"
+                        "description": "The task description. Supports file interpolation: {file:path/to/file.py}, {file:path:10-20}, {files:*.py}"
                     },
                     "task_type": {
                         "type": "string",
@@ -656,7 +657,7 @@ async def handle_list_tools() -> list[types.Tool]:
                 "properties": {
                     "prompt": {
                         "type": "string",
-                        "description": "Simple prompt (for single-turn) or latest user message"
+                        "description": "Simple prompt (for single-turn) or latest user message. Supports file interpolation: {file:path/to/file.py}, {file:path:10-20}, {files:*.py}"
                     },
                     "messages": {
                         "type": "array",
@@ -748,6 +749,10 @@ async def handle_call_tool(
         context = arguments.get("context", "")
         session_id = arguments.get("session_id", None)
         
+        # Process file interpolation in prompt
+        if "{file:" in prompt or "{files:" in prompt:
+            prompt = construct_prompt(prompt)
+        
         # Load files if provided
         if files:
             file_contents = []
@@ -795,6 +800,10 @@ async def handle_call_tool(
         temperature = arguments.get("temperature", 0.3)
         session_id = arguments.get("session_id", None)
         
+        # Process file interpolation in prompt
+        if "{file:" in prompt or "{files:" in prompt:
+            prompt = construct_prompt(prompt)
+        
         try:
             # Use unified chat
             messages = [{"role": "user", "content": prompt}]
@@ -824,6 +833,10 @@ async def handle_call_tool(
         prompt = arguments["prompt"]
         model_choice = arguments.get("model", "gemini-flash")
         max_tokens = arguments.get("max_tokens", 1000)
+        
+        # Process file interpolation in prompt
+        if "{file:" in prompt or "{files:" in prompt:
+            prompt = construct_prompt(prompt)
         
         if model_choice == "gemini-flash":
             if not gemini_flash_model:
@@ -896,6 +909,10 @@ async def handle_call_tool(
         messages = arguments.get("messages", None)
         prompt = arguments.get("prompt", "")
         system = arguments.get("system", None)
+        
+        # Process file interpolation in prompt if provided
+        if prompt and ("{file:" in prompt or "{files:" in prompt):
+            prompt = construct_prompt(prompt)
         partial_response = arguments.get("partial_response", None)
         model = arguments.get("model", "kimi-k2-0711-preview")
         temperature = arguments.get("temperature", 0.6)
